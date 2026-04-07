@@ -2,109 +2,39 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Commands
 
-This is an MCP (Model Context Protocol) learning repository with two main implementations:
+```bash
+pnpm start        # production
+pnpm dev          # development with nodemon hot-reload
+```
 
-1. **stdio/** - MCP server using stdio transport with tool registration
-2. **SSE/** - Server-Sent Events (SSE) minimal implementation with Express
+No test suite is configured.
+
+## Environment
+
+Copy `.env.development` and set:
+- `MIMO_KEY` — API key (required)
+- `MIMO_PREFIX` — base URL ending in `/anthropic/v1/messages` (required)
+- `MIMO_MODEL` — model name (default: `mimo-v2-omni`)
+- `DEFAULT_MAX_TOKENS` — (default: 4096)
+- `MCP_HOST` / `MCP_PORT` — server bind address (default: `127.0.0.1:3000`)
+- `MCP_BODY_LIMIT` — express body size limit (default: `20mb`)
 
 ## Architecture
 
-### stdio MCP Server
+Two-file ESM project (`"type": "module"`):
 
-The stdio implementation (`stdio/server.js`) is an MCP server that communicates via standard input/output:
+**`ocr.js`** — AI layer. Wraps `@anthropic-ai/sdk` pointed at the Xiaomi MiMo API (Anthropic-compatible). Maintains an in-memory `Map` of conversation histories keyed by `conversationId`. Exports:
+- `streamChatMessage({ conversationId, message, system, model, maxTokens })` — returns `{ resolvedConversationId, stream }`. History is updated after `stream.finalMessage()` resolves.
+- `clearConversation(conversationId)` — deletes history for a session.
 
-- **Transport**: Uses `StdioServerTransport` from `@modelcontextprotocol/sdk`
-- **Tools**: Registers three tools using Zod schemas:
-  - `add_numbers` - Basic arithmetic operation
-  - `create_file` - File system operations
-  - `audit` - Security audit for npm/pnpm projects (local or GitHub)
-- **Utilities** (`stdio/Utils.js`): Contains helper functions for file operations, project parsing (local/remote GitHub), and security auditing using pnpm audit
+**`server.js`** — Express HTTP server with SSE streaming. Key routes:
+- `POST /api/chat` — accepts `{ conversationId?, message, content, system?, model?, maxTokens? }`. Streams SSE events: `start`, `delta`, `done`, `error`. `message` and `content` are interchangeable; both accept string or Anthropic content-block arrays (for multimodal/image input).
+- `DELETE /api/chat/:conversationId` — clears conversation history.
+- `POST /messages?sessionId=` — MCP transport message handler (SSE session relay).
+- `GET /` — service discovery JSON.
 
-### SSE Server
+The `transports` Map in `server.js` is reserved for MCP SSE sessions but the `/sse` endpoint is not yet implemented — only the `/messages` relay exists.
 
-The SSE implementation (`SSE/server.js`) demonstrates real-time communication:
-
-- **Framework**: Express 5.x
-- **Pattern**: Maintains a Set of connected clients, broadcasts messages to all
-- **Endpoints**:
-  - `GET /sse` - Establishes SSE connection
-  - `POST /send` - Receives messages and broadcasts to all clients
-  - `GET /` - Serves HTML demo page with inline JavaScript
-
-## Development Commands
-
-### stdio MCP Server
-
-```bash
-cd stdio
-pnpm install
-pnpm start        # Run the MCP server
-pnpm dev          # Run with nodemon (auto-reload)
-```
-
-### SSE Server
-
-```bash
-cd SSE
-pnpm install
-pnpm start        # Start server on port 3001
-pnpm dev          # Start with nodemon
-pnpm client       # Run test client
-```
-
-Access the web interface at `http://localhost:3001/`
-
-## Key Implementation Details
-
-### MCP Tool Registration
-
-Tools are registered with Zod schemas for input validation. The pattern is:
-
-```javascript
-server.registerTool('tool_name', {
-  description: 'Tool description',
-  inputSchema: {
-    param: z.type().describe('Parameter description'),
-  },
-}, async (params) => {
-  return {
-    content: [{ type: 'text', text: result }],
-  };
-});
-```
-
-### Security Audit Flow
-
-The audit tool (`stdio/audit_server.js`) follows this workflow:
-
-1. Create temporary work directory
-2. Parse project (local path or GitHub URL via API)
-3. Write package.json to work directory
-4. Generate package-lock.json with `npm i --package-lock-only`
-5. Run `pnpm audit --json` and parse results
-6. Generate markdown report with vulnerability tables
-7. Clean up temporary files
-
-### SSE Communication
-
-The SSE server uses raw `res.write()` with proper event-stream formatting:
-
-```
-event: eventName
-data: {"json":"payload"}
-
-```
-
-Clients are tracked in a Set and removed on connection close.
-
-## Module System
-
-Both projects use ES modules (`"type": "module"` in package.json). All imports must use `.js` extensions.
-
-## Error Handling
-
-- stdio utilities throw descriptive errors for validation failures
-- SSE server logs connections/disconnections to console
-- Audit tool catches non-zero exit codes from pnpm audit (expected when vulnerabilities exist)
+Localhost-only host header validation is applied automatically when `MCP_HOST` is a loopback address.
