@@ -46,7 +46,6 @@ export async function createFileInDirectory(directoryPath, fileName, content = '
   };
 }
 
-
 export async function createWorkDir() {
   const __dirname = import.meta.dirname.split('/').slice(0, -1).join('/');
   const workPath = join(__dirname, `work_${randomUUID()}`);

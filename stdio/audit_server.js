@@ -12,6 +12,7 @@ export const audit = async (projectRoot, savePath) => {
   const pkg = await parseProject(projectRoot);
   await writePackageJson(workPath, pkg);
   await writePackageLockAndExecuteNpmAudit(workPath, pkg);
-  await auditProject(workPath, savePath);
+  const resultPath = await auditProject(workPath, savePath);
   await cleanWorkDir(workPath);
+  return resultPath;
 }
