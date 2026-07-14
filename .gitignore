@@ -1,3 +1,6 @@
 /node_modules/
 /.idea/
 /.env.development
+*.db
+*.db-wal
+*.db-shm
