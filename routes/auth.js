@@ -3,7 +3,33 @@ import bcrypt from 'bcryptjs';
 import { pool, INITIAL_CREDITS } from '../config.js';
 import { signToken, signRefreshToken, verifyRefreshToken, authMiddleware } from '../middleware/auth.js';
 
+import { createAvatarService } from '../services/avatars.js';
+import { AttachmentError } from '../services/attachments.js';
+
 const router = Router();
+const avatars = createAvatarService();
+
+router.post('/avatar', authMiddleware, async (req, res) => {
+  try {
+    await avatars.upload(req.user.id, req.body);
+    const [[user]] = await pool.execute('SELECT id, email, nickname, avatar, credits, created_at FROM users WHERE id=?', [req.user.id]);
+    res.json(user);
+  } catch (error) {
+    if (!(error instanceof AttachmentError)) console.error('头像上传失败', error);
+    res.status(error instanceof AttachmentError ? error.statusCode : 500).json({ error: error instanceof AttachmentError ? error.message : '头像上传失败，请稍后重试' });
+  }
+});
+
+// 头像是公开的用户资料；私有 OSS 对象通过短期签名读取。
+router.get('/avatars/:userId/:fileName', async (req, res) => {
+  try {
+    const url = await avatars.signedUrl(req.params.userId, req.params.fileName);
+    res.set('Cache-Control', 'no-store');
+    res.redirect(url);
+  } catch (error) {
+    res.status(error instanceof AttachmentError ? error.statusCode : 502).json({ error: error instanceof AttachmentError ? error.message : '头像暂时无法读取' });
+  }
+});
 
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
@@ -145,8 +171,11 @@ router.put('/profile', authMiddleware, async (req, res) => {
     values.push(nickname.trim());
   }
   if (avatar !== undefined) {
-    fields.push('avatar = ?');
-    values.push(avatar || null);
+    const [[currentUser]] = await pool.execute('SELECT avatar FROM users WHERE id=?', [req.user.id]);
+    if (avatar !== currentUser?.avatar) {
+      res.status(400).json({ error: '请使用头像上传功能设置头像' });
+      return;
+    }
   }
 
   if (fields.length) {

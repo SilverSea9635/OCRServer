@@ -1,0 +1,101 @@
+name: Deploy to ECS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 不在部署进行到一半时取消；服务器端还会拒绝过期提交。
+concurrency:
+  group: ocrserver-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '10.32.1'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: Install pnpm
+        run: npm install --global "pnpm@$PNPM_VERSION"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run tests
+        shell: bash
+        run: |
+          if [[ -z "$(git ls-files 'tests/*.test.js')" ]]; then
+            echo 'No committed tests found. Commit the tests/ directory before deploying.' >&2
+            exit 1
+          fi
+          pnpm test
+      - name: Check deployment script syntax
+        run: bash -n scripts/deploy_ecs.sh
+
+  deploy:
+    name: Deploy
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Deploy tested commit over SSH
+        shell: bash
+        env:
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+          ECS_USER: ${{ secrets.ECS_USER }}
+          ECS_PORT: ${{ secrets.ECS_PORT || '22' }}
+          ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+          ECS_KNOWN_HOSTS: ${{ secrets.ECS_KNOWN_HOSTS }}
+          ECS_APP_DIR: ${{ secrets.ECS_APP_DIR }}
+          ECS_NODE_BIN: ${{ vars.ECS_NODE_BIN }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for name in ECS_HOST ECS_USER ECS_SSH_KEY ECS_KNOWN_HOSTS ECS_APP_DIR; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing GitHub Actions secret: $name" >&2
+              exit 1
+            fi
+          done
+          [[ "$ECS_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || { echo 'ECS_HOST must be an IPv4 address or hostname.' >&2; exit 1; }
+          [[ "$ECS_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || { echo 'Invalid ECS_USER.' >&2; exit 1; }
+          [[ "$ECS_PORT" =~ ^[0-9]+$ ]] || { echo 'Invalid ECS_PORT.' >&2; exit 1; }
+
+          umask 077
+          ssh_dir=$(mktemp -d "$RUNNER_TEMP/ocrserver-ssh.XXXXXX")
+          trap 'rm -rf -- "$ssh_dir"' EXIT
+          printf '%s\n' "$ECS_SSH_KEY" | tr -d '\r' > "$ssh_dir/key"
+          printf '%s\n' "$ECS_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+
+          # 参数经过 shell 转义，路径可包含空格；不将 Secret 拼入可执行脚本。
+          remote_command=$(python3 - <<'PY'
+          import os
+          import shlex
+          names = ['ECS_APP_DIR', 'DEPLOY_SHA', 'NODE_VERSION', 'PNPM_VERSION', 'ECS_NODE_BIN']
+          print('timeout --signal=TERM 10m bash -se -- ' + ' '.join(shlex.quote(os.environ[name]) for name in names))
+          PY
+          )
+          ssh -T -p "$ECS_PORT" -i "$ssh_dir/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$ECS_USER@$ECS_HOST" "$remote_command" < scripts/deploy_ecs.sh

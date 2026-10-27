@@ -2,8 +2,11 @@ import dotenv from 'dotenv';
 import mysql from 'mysql2/promise';
 import { fileURLToPath } from 'node:url';
 
+const environment = process.env.NODE_ENV || 'development';
+
 dotenv.config({
-  path: fileURLToPath(new URL('./.env.development', import.meta.url)),
+  path: fileURLToPath(new URL(`./.env.${environment}`, import.meta.url)),
+  quiet: true,
 });
 
 // ─── Server ───
@@ -40,7 +43,12 @@ export const INITIAL_CREDITS = parseInt(process.env.INITIAL_CREDITS) || 100;
 export const MIMO_KEY = process.env.MIMO_KEY;
 export const MIMO_PREFIX = process.env.MIMO_PREFIX;
 export const MIMO_MODEL = process.env.MIMO_MODEL || 'mimo-v2.5';
-export const MIMO_SYSTEM =
-  process.env.MIMO_SYSTEM ||
-  'You are MiMo, an AI assistant developed by Xiaomi. Keep answers concise and useful.';
 export const DEFAULT_MAX_TOKENS = parseInt(process.env.DEFAULT_MAX_TOKENS) || 4096;
+
+// ─── Agent Service (Python 工程) ───
+// /api/chat 由 Python 执行共享图并持久化 PostgreSQL 消息，本服务转发 SSE。
+// 默认开启；关闭时停止聊天，不再使用缺少新消息存储的 MiMo 直连生成。
+export const AGENT_SERVICE_URL = process.env.AGENT_SERVICE_URL || 'http://127.0.0.1:8001';
+export const AGENT_SERVICE_ENABLED = (process.env.AGENT_SERVICE_ENABLED || 'true') === 'true';
+// 图片视觉理解模型（截图 → 文本描述），复用 MiMo 的多模态能力
+export const AGENT_VISION_MODEL = process.env.AGENT_VISION_MODEL || MIMO_MODEL;
